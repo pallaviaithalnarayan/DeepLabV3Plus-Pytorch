@@ -129,9 +129,10 @@ class Mydata(data.Dataset):
 
     @classmethod
     def decode_target(cls, target):
-        # target[target == 255] = 19
-        if target == 255:
-            target = 7
+        print(f'{target =}{target.shape}')
+        target[target == 255] = 7
+        # if target == 255:
+        #     target = 7
         #target = target.astype('uint8') + 1
         # print(cls.train_id_to_color, 'cls.train_id_to_color')
         return cls.train_id_to_color[target]
@@ -181,11 +182,11 @@ class Mydata(data.Dataset):
 
 
 
-m = Mydata("D:\FKIE\git_workspace\DeepLabV3Plus-Pytorch\datasets\data")
-print(m)
-# encode_targets = m.encode_target([0,2,3])
-# print(encode_targets)
-# decode_targets = m.decode_target(255)
-# print(decode_targets)
+# m = Mydata("D:\FKIE\git_workspace\DeepLabV3Plus-Pytorch\datasets\data")
+# print(m)
+# # encode_targets = m.encode_target([0,2,3])
+# # print(encode_targets)
+# # decode_targets = m.decode_target(255)
+# # print(decode_targets)
 
-m.__getitem__(1)
+# m.__getitem__(1)

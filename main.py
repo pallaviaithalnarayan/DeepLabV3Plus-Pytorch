@@ -49,8 +49,8 @@ def get_argparser():
                         help="save segmentation results to \"./results\"")
     # parser.add_argument("--total_itrs", type=int, default=30e3,
     #                 help="epoch number (default: 30k)")
-    parser.add_argument("--total_itrs", type=int, default=10,
-                        help="epoch number (default: 30k)")
+    parser.add_argument("--total_itrs", type=int, default=1,
+                        help="epoch number (default: 10)")
     parser.add_argument("--lr", type=float, default=0.01,
                         help="learning rate (default: 0.01)")
     parser.add_argument("--lr_policy", type=str, default='poly', choices=['poly', 'step'],
@@ -61,8 +61,8 @@ def get_argparser():
                         help='crop validation (default: False)')
     # parser.add_argument("--batch_size", type=int, default=16,
     #                     help='batch size (default: 16)')
-    parser.add_argument("--batch_size", type=int, default=1,
-                        help='batch size (default: 16)')
+    parser.add_argument("--batch_size", type=int, default=2,
+                        help='batch size (default: 2)')
     parser.add_argument("--val_batch_size", type=int, default=4,
                         help='batch size for validation (default: 4)')
     parser.add_argument("--crop_size", type=int, default=513)
@@ -268,22 +268,28 @@ def main():
         opts.val_batch_size = 1
 
     train_dst, val_dst = get_dataset(opts)
+    image_shape = train_dst[0][0].shape
+    print(f'{len(train_dst) = }, {image_shape = }')
+
+
     train_loader = data.DataLoader(
         train_dst, batch_size=opts.batch_size, shuffle=True, num_workers=2,
         drop_last=True)  # drop_last=True to ignore single-image batches.
     val_loader = data.DataLoader(
-        val_dst, batch_size=opts.val_batch_size, shuffle=True, num_workers=2)
+        val_dst, batch_size=opts.val_batch_size, shuffle=False, num_workers=2)
     print("Dataset: %s, Train set: %d, Val set: %d" %
           (opts.dataset, len(train_dst), len(val_dst)))
 
     # Set up model (all models are 'constructed at network.modeling)
     model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
+
     if opts.separable_conv and 'plus' in opts.model:
         network.convert_to_separable_conv(model.classifier)
     utils.set_bn_momentum(model.backbone, momentum=0.01)
 
     # Set up metrics
     metrics = StreamSegMetrics(opts.num_classes)
+    # print(f'{metrics.confusion_matrix=}')
 
     # Set up optimizer
     optimizer = torch.optim.SGD(params=[
@@ -349,6 +355,7 @@ def main():
         model.eval()
         val_score, ret_samples = validate(
             opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
+        print(f'{val_score=}')
         print(metrics.to_str(val_score))
         return
 
