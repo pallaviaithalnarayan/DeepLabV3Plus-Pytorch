@@ -8,6 +8,7 @@ from PIL import Image
 import numpy as np
 
 class Mydata(data.Dataset):
+    
     """
     UAVid dataset from ISPRS 
     UAVid: A Semantic Segmentation Dataset for UAV Imagery
@@ -39,40 +40,63 @@ class Mydata(data.Dataset):
     # [[128   0   0][128  64 128][  0 128   0][128 128   0][ 64   0 128][192   0 192][ 64  64   0][  0   0   0]]
 
     def __init__(self, root, split='train', mode='fine', target_type='semantic', transform=None):
-        print("I am here")
+        # print("I am here")
         self.root = os.path.expanduser(root)
         # self.mode = 'gtFine'
         self.target_type = target_type
         self.images_dir = os.path.join(self.root, split)
-        print(f'images_dir {self.images_dir}')
+        # print(f'images_dir {self.images_dir}')
 
         self.targets_dir = os.path.join(self.root, split)
-        print(f'targets_dir {self.targets_dir}')
+        # print(f'targets_dir {self.targets_dir}')
         self.transform = transform
 
         self.split = split
         self.images = []
         self.targets = []
 
+        split_dir = os.path.join(self.root, split)
+
+        for seq_folder in os.listdir(split_dir):  # Iterate through sequence folders like 'seq21'
+            seq_path = os.path.join(split_dir, seq_folder)
+            if os.path.isdir(seq_path):
+                img_dir = os.path.join(seq_path, 'Images')
+                # Collect all image and mask files from each sequence folder
+                for img_file in os.listdir(img_dir):
+                    self.images.append(os.path.join(img_dir, img_file))
+                if self.split!='test':
+                    mask_dir = os.path.join(seq_path, 'Labels')
+                    for mask_file in os.listdir(mask_dir):
+                        self.targets.append(os.path.join(mask_dir, mask_file))
+
+                    if len(self.images) != len(self.targets):
+                        raise RuntimeError("The number of images and masks do not match. Please check the dataset structure.")
+                    
         if split not in ['train', 'test', 'val']:
             raise ValueError('Invalid split for mode! Please use split="train" split="test" or split="val"')
 
-        print(self.images_dir)
+        # print(self.images_dir)
         if not os.path.isdir(self.images_dir) or not os.path.isdir(self.targets_dir):
             raise RuntimeError('Dataset not found or incomplete. Please make sure all required folders for the specified "split" and "mode" are inside the "root" directory')
         
-        for uav_data in os.listdir(self.images_dir):
-            if uav_data == 'images':
-                img_dir = os.path.join(self.images_dir, uav_data)
-                # print(img_dir, 'img_dir')
-                for file_name in os.listdir(img_dir):
-                    self.images.append(os.path.join(img_dir, file_name))
+        if split == 'test' and not self.targets:
+            print("Test set detected. Only images will be loaded.")
+
+        elif len(self.images) != len(self.targets):
+            raise RuntimeError("The number of images and masks do not match. Please check the dataset structure.")
+
+        # for uav_data in os.listdir(self.images_dir):
+        #     if uav_data == 'images':
+        #         img_dir = os.path.join(self.images_dir, uav_data)
+        #         # print(img_dir, 'img_dir')
+        #         for file_name in os.listdir(img_dir):
+        #             self.images.append(os.path.join(img_dir, file_name))
                 
-            if uav_data == 'masks':
-                target_dir = os.path.join(self.targets_dir, uav_data)
+        #     if uav_data == 'masks':
+        #         target_dir = os.path.join(self.targets_dir, uav_data)
                 
-                for file_name in os.listdir(target_dir):
-                    self.targets.append(os.path.join(target_dir, file_name))
+        #         for file_name in os.listdir(target_dir):
+        #             self.targets.append(os.path.join(target_dir, file_name))
         
         # print(f'images -> {self.images} \n masks -> {self.targets}')
 
@@ -129,7 +153,7 @@ class Mydata(data.Dataset):
 
     @classmethod
     def decode_target(cls, target):
-        print(f'{target =}{target.shape}')
+        # print(f'{target =}{target.shape}')
         target[target == 255] = 7
         # if target == 255:
         #     target = 7
@@ -146,15 +170,20 @@ class Mydata(data.Dataset):
             than one item. Otherwise target is a json object if target_type="polygon", else the image segmentation.
         """
         image = Image.open(self.images[index]).convert('RGB')
-        print(f'image {image}')
-
+        # print(f'image {image}')
+        
+        if self.split == 'test':
+            if self.transform:
+                image = self.transform(image)
+            return image
+        
         target = Image.open(self.targets[index])
-        print(f'target {np.array(target).shape}')
+        # print(f'target {np.array(target).shape}')
 
         if self.transform:
             image, target = self.transform(image, target)
         target = self.encode_target(target)
-        print(f' new target ===> {target.shape}')
+        # print(f' new target ===> {target.shape}')
         return image, target
 
     def __len__(self):
@@ -190,3 +219,7 @@ class Mydata(data.Dataset):
 # # print(decode_targets)
 
 # m.__getitem__(1)
+# test_dataset = Mydata("D:\FKIE\Datasets\uavid_v1.5_official_release_image")
+# test_dataset = Mydata(root = r"D:\FKIE\Datasets\uavid_v1.5_official_release_image", split='uavid_val')
+# print(len(test_dataset), 'images from dataset')
+# print(len(test_dataset.targets), "test samples loaded.")

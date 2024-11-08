@@ -44,13 +44,14 @@ def get_argparser():
     parser.add_argument("--output_stride", type=int, default=16, choices=[8, 16])
 
     # Train Options
+    parser.add_argument("--num_epochs", type=int, default=100, help="Number of epochs (default: 1)")
     parser.add_argument("--test_only", action='store_true', default=False)
     parser.add_argument("--save_val_results", action='store_true', default=False,
                         help="save segmentation results to \"./results\"")
     # parser.add_argument("--total_itrs", type=int, default=30e3,
     #                 help="epoch number (default: 30k)")
-    parser.add_argument("--total_itrs", type=int, default=1,
-                        help="epoch number (default: 10)")
+    parser.add_argument("--total_itrs", type=int, default=100,
+                        help="epoch number (default: 100)")
     parser.add_argument("--lr", type=float, default=0.01,
                         help="learning rate (default: 0.01)")
     parser.add_argument("--lr_policy", type=str, default='poly', choices=['poly', 'step'],
@@ -61,9 +62,9 @@ def get_argparser():
                         help='crop validation (default: False)')
     # parser.add_argument("--batch_size", type=int, default=16,
     #                     help='batch size (default: 16)')
-    parser.add_argument("--batch_size", type=int, default=2,
-                        help='batch size (default: 2)')
-    parser.add_argument("--val_batch_size", type=int, default=4,
+    parser.add_argument("--batch_size", type=int, default=64,
+                        help='batch size (default: 64)')
+    parser.add_argument("--val_batch_size", type=int, default=64,
                         help='batch size for validation (default: 4)')
     parser.add_argument("--crop_size", type=int, default=513)
 
@@ -81,8 +82,10 @@ def get_argparser():
                         help="random seed (default: 1)")
     parser.add_argument("--print_interval", type=int, default=10,
                         help="print interval of loss (default: 10)")
-    parser.add_argument("--val_interval", type=int, default=100,
-                        help="epoch interval for eval (default: 100)")
+    # parser.add_argument("--val_interval", type=int, default=100,
+    #                     help="epoch interval for eval (default: 100)")
+    parser.add_argument("--val_interval", type=int, default=10,
+                        help="epoch interval for eval (default: 10)")
     parser.add_argument("--download", action='store_true', default=False,
                         help="download datasets")
 
@@ -169,11 +172,18 @@ def get_dataset(opts):
         ])
 
         val_transform = et.ExtCompose([
-            # et.ExtResize( 512 ),
+            et.ExtResize(size=(768, 768)),  # Ensure all validation images are resized
             et.ExtToTensor(),
             et.ExtNormalize(mean=[0.485, 0.456, 0.406],
                             std=[0.229, 0.224, 0.225]),
         ])
+
+        # val_transform = et.ExtCompose([
+        #     # et.ExtResize( 512 ),
+        #     et.ExtToTensor(),
+        #     et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+        #                     std=[0.229, 0.224, 0.225]),
+        # ])
 
         train_dst = Mydata(root=opts.data_root,
                                split='train', transform=train_transform)
@@ -184,10 +194,14 @@ def get_dataset(opts):
 
 
 
-def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
+def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=None):
     """Do validation and return specified samples"""
     metrics.reset()
     ret_samples = []
+    total_val_loss = 0
+    correct_val_preds = 0
+    total_val_samples = 0
+
     if opts.save_val_results:
         if not os.path.exists('results'):
             os.mkdir('results')
@@ -202,8 +216,19 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
             labels = labels.to(device, dtype=torch.long)
 
             outputs = model(images)
+
+            # Calculate loss for the batch and accumulate
+            loss = criterion(outputs, labels)
+            total_val_loss += loss.item()
+
             preds = outputs.detach().max(dim=1)[1].cpu().numpy()
-            targets = labels.cpu().numpy()
+            targets = labels.cpu().numpy()  # Move labels to CPU as numpy array
+            correct_val_preds += np.sum(preds == targets)
+
+            # correct_val_preds += (preds == labels).sum().item()
+            # total_val_samples += labels.size(0)
+            total_val_samples += targets.size  # Total pixels in the batch
+            # total_val_samples += labels.numel()  # Total pixels in the batch
 
             metrics.update(targets, preds)
             if ret_samples_ids is not None and i in ret_samples_ids:  # get vis samples
@@ -234,9 +259,21 @@ def validate(opts, model, loader, device, metrics, ret_samples_ids=None):
                     plt.savefig('results/%d_overlay.png' % img_id, bbox_inches='tight', pad_inches=0)
                     plt.close()
                     img_id += 1
+                
+        # Calculate average loss and accuracy over the validation dataset
+        avg_val_loss = total_val_loss / len(loader)
+        avg_val_acc = (correct_val_preds / total_val_samples) * 100  # Convert to percentage
 
         score = metrics.get_results()
-    return score, ret_samples
+    return score, ret_samples, avg_val_loss, avg_val_acc
+
+# Load the pretrained model:
+
+def fine_tuning(model_name, classes, op_stride):
+    # model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
+    model = network.modeling.__dict__[model_name](num_classes=classes, output_stride=op_stride)
+    model.load_state_dict(torch.load('checkpoints/best_deeplabv3plus_mobilenet_cityscapes_os16.pth')['model_state'])
+
 
 
 def main():
@@ -303,6 +340,9 @@ def main():
     elif opts.lr_policy == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=opts.step_size, gamma=0.1)
 
+    if not hasattr(opts, 'loss_type') or opts.loss_type is None:
+        opts.loss_type = 'cross_entropy'  # Default to cross-entropy if not set
+
     # Set up criterion
     # criterion = utils.get_loss(opts.loss_type)
     if opts.loss_type == 'focal_loss':
@@ -353,17 +393,29 @@ def main():
 
     if opts.test_only:
         model.eval()
-        val_score, ret_samples = validate(
-            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, ret_samples_ids=vis_sample_id)
+        val_score, ret_samples, avg_val_loss, avg_val_acc = validate(
+            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion, ret_samples_ids=vis_sample_id)
         print(f'{val_score=}')
         print(metrics.to_str(val_score))
         return
+    
+    # Initialize metric lists
+
+    train_losses = []
+    train_accuracies = []
+    val_losses = []
+    val_accuracies = []
 
     interval_loss = 0
-    while True:  # cur_itrs < opts.total_itrs:
+
+    while cur_epochs < opts.num_epochs:
         # =====  Train  =====
         model.train()
         cur_epochs += 1
+        epoch_train_loss = 0
+        correct_train_preds = 0
+        total_train_samples = 0
+
         for (images, labels) in train_loader:
             cur_itrs += 1
 
@@ -378,45 +430,79 @@ def main():
 
             np_loss = loss.detach().cpu().numpy()
             interval_loss += np_loss
-            if vis is not None:
-                vis.vis_scalar('Loss', cur_itrs, np_loss)
+            epoch_train_loss += np_loss
+
+            # Calculate training accuracy for this batch
+            preds = outputs.argmax(dim=1)
+            correct_train_preds += (preds == labels).sum().item()
+            total_train_samples += labels.numel()  # Total number of pixels in the batch
+            # total_train_samples += labels.size(0)
 
             if (cur_itrs) % 10 == 0:
                 interval_loss = interval_loss / 10
                 print("Epoch %d, Itrs %d/%d, Loss=%f" %
-                      (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
+                    (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
                 interval_loss = 0.0
 
-            if (cur_itrs) % opts.val_interval == 0:
-                save_ckpt('checkpoints/latest_%s_%s_os%d.pth' %
-                          (opts.model, opts.dataset, opts.output_stride))
-                print("validation...")
-                model.eval()
-                val_score, ret_samples = validate(
-                    opts=opts, model=model, loader=val_loader, device=device, metrics=metrics,
-                    ret_samples_ids=vis_sample_id)
-                print(metrics.to_str(val_score))
-                if val_score['Mean IoU'] > best_score:  # save best model
-                    best_score = val_score['Mean IoU']
-                    save_ckpt('checkpoints/best_%s_%s_os%d.pth' %
-                              (opts.model, opts.dataset, opts.output_stride))
+        # Calculate epoch-level training loss and accuracy
+        train_loss = epoch_train_loss / len(train_loader)
+        train_acc = (correct_train_preds / total_train_samples) * 100  # Convert to percentage
+        train_losses.append(train_loss)
+        train_accuracies.append(train_acc)
 
-                if vis is not None:  # visualize validation score and samples
-                    vis.vis_scalar("[Val] Overall Acc", cur_itrs, val_score['Overall Acc'])
-                    vis.vis_scalar("[Val] Mean IoU", cur_itrs, val_score['Mean IoU'])
-                    vis.vis_table("[Val] Class IoU", val_score['Class IoU'])
+        print(f"Epoch {cur_epochs} - Training Loss: {train_loss:.4f}, Training Accuracy: {train_acc:.2f}%")
 
-                    for k, (img, target, lbl) in enumerate(ret_samples):
-                        img = (denorm(img) * 255).astype(np.uint8)
-                        target = train_dst.decode_target(target).transpose(2, 0, 1).astype(np.uint8)
-                        lbl = train_dst.decode_target(lbl).transpose(2, 0, 1).astype(np.uint8)
-                        concat_img = np.concatenate((img, target, lbl), axis=2)  # concat along width
-                        vis.vis_image('Sample %d' % k, concat_img)
-                model.train()
-            scheduler.step()
+        # ===== Validation =====
+        # if (cur_epochs) % opts.val_interval == 0:
+        # Save best model based on Mean IoU
+        val_score, ret_samples, avg_val_loss, avg_val_acc = validate(
+            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion, ret_samples_ids=vis_sample_id)
+        
+        print(f"{avg_val_loss=}% {avg_val_acc=}%")
+        # breakpoint
+        # print(metrics.to_str(val_score))
+        val_losses.append(avg_val_loss)
+        val_accuracies.append(avg_val_acc)
 
-            if cur_itrs >= opts.total_itrs:
-                return
+        if val_score['Mean IoU'] > best_score:
+            best_score = val_score['Mean IoU']
+            save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_os{opts.output_stride}.pth')
+        
+        model.train()
+        
+
+        # Step the scheduler
+        scheduler.step()
+
+    # After training, print final losses and accuracies
+    print(f"Final Training Losses: {train_losses}")
+    print(f"Final Training Accuracies: {train_accuracies}")
+    print(f"Final Validation Losses: {val_losses}")
+    print(f"Final Validation Accuracies: {val_accuracies}")
+
+    # Plotting the metrics
+    plt.figure(figsize=(15, 5))
+
+    # Plot training and validation loss
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label="Training Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training and Validation Loss")
+
+    # Plot training and validation accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accuracies, label="Training Accuracy")
+    plt.plot(val_accuracies, label="Validation Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.title("Training and Validation Accuracy")
+
+    plt.savefig("training_validation_metrics.png")  # Save the plot as PNG file
+    plt.show()
 
 
 if __name__ == '__main__':
