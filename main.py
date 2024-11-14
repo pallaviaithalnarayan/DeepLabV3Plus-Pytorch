@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 from torch.utils import data
-from datasets import VOCSegmentation, Cityscapes, Mydata
+from datasets import VOCSegmentation, Cityscapes, Mydata, CustomDataset
 from utils import ext_transforms as et
 from metrics import StreamSegMetrics
 
@@ -30,7 +30,7 @@ def get_argparser():
     parser.add_argument("--data_root", type=str, default='./datasets/data',
                         help="path to Dataset")
     parser.add_argument("--dataset", type=str, default='voc',
-                        choices=['voc', 'cityscapes', 'mydata'], help='Name of dataset')
+                        choices=['voc', 'cityscapes', 'mydata', 'customdata'], help='Name of dataset')
     parser.add_argument("--num_classes", type=int, default=None,
                         help="num classes (default: None)")
     # parser.add_argument()
@@ -180,6 +180,7 @@ def get_dataset(opts):
             et.ExtNormalize(mean=[0.485, 0.456, 0.406],
                             std=[0.229, 0.224, 0.225]),
         ])
+    
 
         # val_transform = et.ExtCompose([
         #     # et.ExtResize( 512 ),
@@ -191,6 +192,29 @@ def get_dataset(opts):
         train_dst = Mydata(root=opts.data_root,
                                split='train', transform=train_transform)
         val_dst = Mydata(root=opts.data_root,
+                             split='val', transform=val_transform)   
+    
+    if opts.dataset == 'customdata':
+        train_transform = et.ExtCompose([
+            # et.ExtResize( 512 ),
+            et.ExtRandomCrop(size=(opts.crop_size, opts.crop_size)),
+            et.ExtColorJitter(brightness=0.5, contrast=0.5, saturation=0.5),
+            et.ExtRandomHorizontalFlip(),
+            et.ExtToTensor(),
+            et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+        ])
+
+        val_transform = et.ExtCompose([
+            et.ExtResize(size=(768, 768)),  # Ensure all validation images are resized
+            et.ExtToTensor(),
+            et.ExtNormalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+        ])
+
+        train_dst = CustomDataset(root=opts.data_root,
+                               split='train', transform=train_transform)
+        val_dst = CustomDataset(root=opts.data_root,
                              split='val', transform=val_transform)   
 
     return train_dst, val_dst
@@ -309,7 +333,7 @@ def main():
         opts.num_classes = 21
     elif opts.dataset.lower() == 'cityscapes':
         opts.num_classes = 19
-    elif opts.dataset.lower() == 'mydata':
+    elif opts.dataset.lower() == 'mydata' or opts.dataset.lower() == 'customdata':
         opts.num_classes = 7
 
     # Setup visualization

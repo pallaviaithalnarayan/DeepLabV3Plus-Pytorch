@@ -6,7 +6,7 @@ import random
 import numbers
 import numpy as np
 from PIL import Image
-
+from collections.abc import Iterable
 
 #
 #  Extended Transforms for Semantic Segmentation
@@ -409,7 +409,11 @@ class ExtResize(object):
     """
 
     def __init__(self, size, interpolation=Image.BILINEAR):
-        assert isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)
+        # ***@pnaray***
+        # collections.Iterable attribute is no longer available in Python 3.10 
+        # assert isinstance(size, int) or (isinstance(size, collections.Iterable) and len(size) == 2)
+        assert isinstance(size, int) or (isinstance(size, Iterable) and len(size) == 2)
+
         self.size = size
         self.interpolation = interpolation
 
