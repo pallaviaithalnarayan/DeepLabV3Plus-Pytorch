@@ -1,10 +1,16 @@
+"""
+Author: Pallavi Aithal
+Email: pallavi.narayan@smail.inf.h-brs.de
+Date: 2024-11-14
+Description: Splits the given dataset into train, valid, test in 3:1:2 ratio as per 'UAVid: A Semantic Segmentation Dataset for UAV Imagery'
+"""
 import os 
 import shutil
 import random
 from sklearn.model_selection import train_test_split
 
 # Define the paths to images and labels
-data_dir = "D:\FKIE\git_workspace\SyntheticDataGeneration\dataset_city_park"
+data_dir = "..\SyntheticDataGeneration\dataset_city_park"
 images_dir = os.path.join(data_dir, "images")
 labels_dir = os.path.join(data_dir, "masks")
 
@@ -17,14 +23,9 @@ assert len(all_images) == len(all_labels), "Mismatch between images and labels c
 # Pair images and labels to keep them together during the split
 all_pairs = list(zip(all_images, all_labels))
 
-# Step 1: Split into train+val and test sets (80% train+val, 20% test)
-
-# train_val_pairs, test_pairs = train_test_split(all_pairs, test_size=0.2, random_state=42)
-train_val_pairs, test_pairs = train_test_split(all_pairs, test_size=0.2, shuffle=True)
-# shuffle=True
-
-# Step 2: Further split train+val into train and validation sets (90% train, 10% validation)
-train_pairs, val_pairs = train_test_split(train_val_pairs, test_size=0.1, shuffle=False)
+# Step 1: Split into train (50%), validation (17%) and test (33%) sets
+train_pairs, temp_pairs = train_test_split(all_pairs, test_size=0.5, random_state=42, shuffle=True)  # 50% train
+val_pairs, test_pairs = train_test_split(temp_pairs, test_size=2/3, random_state=42, shuffle=True)  # 17% validation, 33% test
 
 # Summary of split sizes
 print(f"Total Images: {len(all_images)}")

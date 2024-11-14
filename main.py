@@ -5,6 +5,7 @@ import os
 import random
 import argparse
 import numpy as np
+import time
 
 from torch.utils import data
 from datasets import VOCSegmentation, Cityscapes, Mydata
@@ -14,6 +15,8 @@ from metrics import StreamSegMetrics
 import torch
 import torch.nn as nn
 from utils.visualizer import Visualizer
+from torch.utils.tensorboard import SummaryWriter
+
 
 from PIL import Image
 import matplotlib
@@ -52,7 +55,7 @@ def get_argparser():
     #                 help="epoch number (default: 30k)")
     parser.add_argument("--total_itrs", type=int, default=100,
                         help="epoch number (default: 100)")
-    parser.add_argument("--lr", type=float, default=0.01,
+    parser.add_argument("--lr", type=float, default=0.001,
                         help="learning rate (default: 0.01)")
     parser.add_argument("--lr_policy", type=str, default='poly', choices=['poly', 'step'],
                         help="learning rate scheduler policy")
@@ -267,16 +270,40 @@ def validate(opts, model, loader, device, metrics, criterion, ret_samples_ids=No
         score = metrics.get_results()
     return score, ret_samples, avg_val_loss, avg_val_acc
 
-# Load the pretrained model:
+def plot_loss_accuracies(train_losses, train_accuracies, val_losses, val_accuracies):
+    # After training, print final losses and accuracies
+    print(f"Final Training Losses: {train_losses}")
+    print(f"Final Training Accuracies: {train_accuracies}")
+    print(f"Final Validation Losses: {val_losses}")
+    print(f"Final Validation Accuracies: {val_accuracies}")
 
-def fine_tuning(model_name, classes, op_stride):
-    # model = network.modeling.__dict__[opts.model](num_classes=opts.num_classes, output_stride=opts.output_stride)
-    model = network.modeling.__dict__[model_name](num_classes=classes, output_stride=op_stride)
-    model.load_state_dict(torch.load('checkpoints/best_deeplabv3plus_mobilenet_cityscapes_os16.pth')['model_state'])
+    # Plotting the metrics
+    plt.figure(figsize=(15, 5))
 
+    # Plot training and validation loss
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label="Training Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.title("Training and Validation Loss")
 
+    # Plot training and validation accuracy
+    plt.subplot(1, 2, 2)
+    plt.plot(train_accuracies, label="Training Accuracy")
+    plt.plot(val_accuracies, label="Validation Accuracy")
+    plt.xlabel("Epochs")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.title("Training and Validation Accuracy")
+
+    plt.savefig("plot_metrics.png")  
+    # plt.show()
 
 def main():
+    writer = SummaryWriter(log_dir="runs/segmentation")
+
     opts = get_argparser().parse_args()
     if opts.dataset.lower() == 'voc':
         opts.num_classes = 21
@@ -367,10 +394,20 @@ def main():
     best_score = 0.0
     cur_itrs = 0
     cur_epochs = 0
+
     if opts.ckpt is not None and os.path.isfile(opts.ckpt):
+        
         # https://github.com/VainF/DeepLabV3Plus-Pytorch/issues/8#issuecomment-605601402, @PytaichukBohdan
         checkpoint = torch.load(opts.ckpt, map_location=torch.device('cpu'))
-        model.load_state_dict(checkpoint["model_state"])
+        # ***pnaray*** These changes are to exclude weights from last layer
+        # Filter out the classifier layer's weights
+        state_dict = checkpoint["model_state"]
+        # Filter out the classifier layer's weights to avoid mismatched sizes
+        filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith("classifier.classifier.3")}
+        # Load state_dict with strict=False to ignore the classifier layer
+        model.load_state_dict(filtered_state_dict, strict=False)
+        # Replace the classifier layer with a new one for UAVid's classes
+        model.classifier.classifier[3] = nn.Conv2d(256, opts.num_classes, kernel_size=1)
         model = nn.DataParallel(model)
         model.to(device)
         if opts.continue_training:
@@ -379,6 +416,9 @@ def main():
             cur_itrs = checkpoint["cur_itrs"]
             best_score = checkpoint['best_score']
             print("Training state restored from %s" % opts.ckpt)
+        else:
+            print("Model weights loaded from %s for fine-tuning" % opts.ckpt)
+
         print("Model restored from %s" % opts.ckpt)
         del checkpoint  # free memory
     else:
@@ -407,6 +447,7 @@ def main():
     val_accuracies = []
 
     interval_loss = 0
+    opts.total_itrs = len(train_loader)
 
     while cur_epochs < opts.num_epochs:
         # =====  Train  =====
@@ -416,94 +457,91 @@ def main():
         correct_train_preds = 0
         total_train_samples = 0
 
-        for (images, labels) in train_loader:
-            cur_itrs += 1
+        batch_times = []
+        with tqdm(total=len(train_loader), desc=f"Epoch {cur_epochs}", unit="batch") as pbar:
+            for images, labels in train_loader:
+                # Start timing for the batch
+                batch_start_time = time.time()
 
-            images = images.to(device, dtype=torch.float32)
-            labels = labels.to(device, dtype=torch.long)
+            # for (images, labels) in train_loader:
+                cur_itrs += 1
 
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+                images = images.to(device, dtype=torch.float32)
+                labels = labels.to(device, dtype=torch.long)
 
-            np_loss = loss.detach().cpu().numpy()
-            interval_loss += np_loss
-            epoch_train_loss += np_loss
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
 
-            # Calculate training accuracy for this batch
-            preds = outputs.argmax(dim=1)
-            correct_train_preds += (preds == labels).sum().item()
-            total_train_samples += labels.numel()  # Total number of pixels in the batch
-            # total_train_samples += labels.size(0)
+                # End timing for the batch
+                batch_end_time = time.time()
+                batch_time = batch_end_time - batch_start_time  # Time in seconds
+                batch_times.append(batch_time)
 
-            if (cur_itrs) % 10 == 0:
-                interval_loss = interval_loss / 10
-                print("Epoch %d, Itrs %d/%d, Loss=%f" %
-                    (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
-                interval_loss = 0.0
+                np_loss = loss.detach().cpu().numpy()
+                interval_loss += np_loss
+                epoch_train_loss += np_loss
+
+                # Calculate training accuracy for this batch
+                preds = outputs.argmax(dim=1)
+                correct_train_preds += (preds == labels).sum().item()
+                total_train_samples += labels.numel()  # Total number of pixels in the batch
+                # total_train_samples += labels.size(0)
+
+                # Update tqdm progress bar
+                pbar.set_postfix(loss=interval_loss / 10, batch_time=f"{batch_time:.2f}s")
+                pbar.update(1)
+
+                if (cur_itrs) % 10 == 0:
+                    interval_loss = interval_loss / 10
+                    print("Epoch %d, Itrs %d/%d, Loss=%f" %
+                        (cur_epochs, cur_itrs, opts.total_itrs, interval_loss))
+                    interval_loss = 0.0
+
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        print(f"Average Batch Time for Epoch {cur_epochs}: {avg_batch_time:.4f} seconds")
 
         # Calculate epoch-level training loss and accuracy
-        train_loss = epoch_train_loss / len(train_loader)
-        train_acc = (correct_train_preds / total_train_samples) * 100  # Convert to percentage
+        # train_loss = epoch_train_loss / len(train_loader)
+        train_loss = round(epoch_train_loss / len(train_loader), 4)
+        train_acc = round(((correct_train_preds / total_train_samples) * 100), 2)  # Convert to percentage
         train_losses.append(train_loss)
         train_accuracies.append(train_acc)
+        writer.add_scalar("Training Loss/train", train_loss, cur_epochs)
+        writer.add_scalar("Training Accuracy/train", train_acc, cur_epochs)
 
         print(f"Epoch {cur_epochs} - Training Loss: {train_loss:.4f}, Training Accuracy: {train_acc:.2f}%")
 
         # ===== Validation =====
-        # if (cur_epochs) % opts.val_interval == 0:
-        # Save best model based on Mean IoU
-        val_score, ret_samples, avg_val_loss, avg_val_acc = validate(
-            opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion, ret_samples_ids=vis_sample_id)
-        
-        print(f"{avg_val_loss=}% {avg_val_acc=}%")
-        # breakpoint
-        # print(metrics.to_str(val_score))
-        val_losses.append(avg_val_loss)
-        val_accuracies.append(avg_val_acc)
+        if (cur_epochs) % opts.val_interval == 0:
+            # Save best model based on Mean IoU
+            # Perform validation at val_interval
+            model.eval()
+            val_score, ret_samples, avg_val_loss, avg_val_acc = validate(
+                opts=opts, model=model, loader=val_loader, device=device, metrics=metrics, criterion=criterion, ret_samples_ids=vis_sample_id)
+            
+            avg_val_loss = round(avg_val_loss, 4)
+            avg_val_acc = round(avg_val_acc, 2)
+            writer.add_scalar("Validation Loss/train", avg_val_loss, cur_epochs)
+            writer.add_scalar("Validation Accuracy/train", avg_val_acc, cur_epochs)
+            # breakpoint
+            # print(metrics.to_str(val_score))
+            val_losses.append(avg_val_loss)
+            val_accuracies.append(avg_val_acc)
 
-        if val_score['Mean IoU'] > best_score:
-            best_score = val_score['Mean IoU']
-            save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_os{opts.output_stride}.pth')
-        
-        model.train()
-        
-
-        # Step the scheduler
+            if val_score['Mean IoU'] > best_score:
+                best_score = val_score['Mean IoU']
+                save_ckpt(f'checkpoints/best_{opts.model}_{opts.dataset}_os{opts.output_stride}.pth')
+            
+            model.train()
         scheduler.step()
 
-    # After training, print final losses and accuracies
-    print(f"Final Training Losses: {train_losses}")
-    print(f"Final Training Accuracies: {train_accuracies}")
-    print(f"Final Validation Losses: {val_losses}")
-    print(f"Final Validation Accuracies: {val_accuracies}")
-
-    # Plotting the metrics
-    plt.figure(figsize=(15, 5))
-
-    # Plot training and validation loss
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label="Training Loss")
-    plt.plot(val_losses, label="Validation Loss")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.title("Training and Validation Loss")
-
-    # Plot training and validation accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(train_accuracies, label="Training Accuracy")
-    plt.plot(val_accuracies, label="Validation Accuracy")
-    plt.xlabel("Epochs")
-    plt.ylabel("Accuracy")
-    plt.legend()
-    plt.title("Training and Validation Accuracy")
-
-    plt.savefig("training_validation_metrics.png")  # Save the plot as PNG file
-    plt.show()
-
+    plot_loss_accuracies(train_losses, train_accuracies, val_losses, val_accuracies)
+    writer.close()
+    print('exiting')
+    
 
 if __name__ == '__main__':
     main()

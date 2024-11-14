@@ -10,4 +10,4 @@ checkpoints_bak
 cityscapes
 test_results
 uavid
-data
+data*
