@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 from torch.utils import data
-from datasets import VOCSegmentation, Cityscapes, Mydata, CustomDataset
+from datasets import VOCSegmentation, Cityscapes, Mydata, Custompark
 from utils import ext_transforms as et
 from metrics import StreamSegMetrics
 
@@ -212,9 +212,9 @@ def get_dataset(opts):
                             std=[0.229, 0.224, 0.225]),
         ])
 
-        train_dst = CustomDataset(root=opts.data_root,
+        train_dst = Custompark(root=opts.data_root,
                                split='train', transform=train_transform)
-        val_dst = CustomDataset(root=opts.data_root,
+        val_dst = Custompark(root=opts.data_root,
                              split='val', transform=val_transform)   
 
     return train_dst, val_dst
