@@ -10,3 +10,5 @@ cityscapes
 test_results
 uavid
 data*
+job*
+runs*
